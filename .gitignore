@@ -21,3 +21,7 @@ build/
 
 # Distribution
 dist/
+
+# Mine
+checkpoints
+*.pt

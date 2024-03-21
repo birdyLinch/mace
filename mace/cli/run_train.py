@@ -15,7 +15,8 @@ import torch.nn.functional
 from e3nn import o3
 from torch.optim.swa_utils import SWALR, AveragedModel
 from torch_ema import ExponentialMovingAverage
-
+import sys
+sys.path.append("./")
 import mace
 from mace import data, modules, tools
 from mace.tools import torch_geometric

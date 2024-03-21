@@ -114,8 +114,11 @@ def config_from_atoms(
     if config_type_weights is None:
         config_type_weights = DEFAULT_CONFIG_TYPE_WEIGHTS
 
-    energy = atoms.info.get(energy_key, None)  # eV
-    forces = atoms.arrays.get(forces_key, None)  # eV / Ang
+    # energy = atoms.info.get(energy_key, None)  # eV
+    # forces = atoms.arrays.get(forces_key, None)  # eV / Ang
+    energy = atoms.get_potential_energy()
+    forces = atoms.get_forces()
+    
     stress = atoms.info.get(stress_key, None)  # eV / Ang
     virials = atoms.info.get(virials_key, None)
     dipole = atoms.info.get(dipole_key, None)  # Debye
@@ -209,15 +212,18 @@ def load_from_xyz(
             if len(atoms) == 1:
                 isolated_atom_config = atoms.info.get("config_type") == "IsolatedAtom"
                 if isolated_atom_config:
-                    if energy_key in atoms.info.keys():
-                        atomic_energies_dict[
-                            atoms.get_atomic_numbers()[0]
-                        ] = atoms.info[energy_key]
-                    else:
-                        logging.warning(
-                            f"Configuration '{idx}' is marked as 'IsolatedAtom' "
-                            "but does not contain an energy."
-                        )
+                    # if energy_key in atoms.info.keys():
+                    #     atomic_energies_dict[
+                    #         atoms.get_atomic_numbers()[0]
+                    #     ] = atoms.info[energy_key]
+                    # else:
+                    #     logging.warning(
+                    #         f"Configuration '{idx}' is marked as 'IsolatedAtom' "
+                    #         "but does not contain an energy."
+                    #     )
+                    atomic_energies_dict[
+                        atoms.get_atomic_numbers()[0]
+                    ] = atoms.get_potential_energy()
             else:
                 atoms_without_iso_atoms.append(atoms)
 
