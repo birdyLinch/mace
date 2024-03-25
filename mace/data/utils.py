@@ -109,16 +109,19 @@ def config_from_atoms(
     dipole_key="dipole",
     charges_key="charges",
     config_type_weights: Dict[str, float] = None,
+    for_calculator: bool = False,
 ) -> Configuration:
     """Convert ase.Atoms to Configuration"""
     if config_type_weights is None:
         config_type_weights = DEFAULT_CONFIG_TYPE_WEIGHTS
 
-    # energy = atoms.info.get(energy_key, None)  # eV
-    # forces = atoms.arrays.get(forces_key, None)  # eV / Ang
-    energy = atoms.get_potential_energy()
-    forces = atoms.get_forces()
-    
+    if for_calculator:
+        energy = atoms.info.get(energy_key, None)  # eV
+        forces = atoms.arrays.get(forces_key, None)  # eV / Ang
+    else:  # for reading from xyz file
+        energy = atoms.get_potential_energy()
+        forces = atoms.get_forces()
+
     stress = atoms.info.get(stress_key, None)  # eV / Ang
     virials = atoms.info.get(virials_key, None)
     dipole = atoms.info.get(dipole_key, None)  # Debye

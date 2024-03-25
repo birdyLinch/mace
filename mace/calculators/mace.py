@@ -189,7 +189,8 @@ class MACECalculator(Calculator):
         Calculator.calculate(self, atoms)
 
         # prepare data
-        config = data.config_from_atoms(atoms, charges_key=self.charges_key)
+        config = data.config_from_atoms(atoms, charges_key=self.charges_key,
+                                        for_calculator=True)
         data_loader = torch_geometric.dataloader.DataLoader(
             dataset=[
                 data.AtomicData.from_config(

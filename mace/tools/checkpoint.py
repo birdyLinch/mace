@@ -31,7 +31,7 @@ class CheckpointBuilder:
             "model": state.model.state_dict(),
             "optimizer": state.optimizer.state_dict(),
             "lr_scheduler": state.lr_scheduler.state_dict(),
-        }
+        }, state.model
 
     @staticmethod
     def load_checkpoint(
@@ -58,6 +58,7 @@ class CheckpointIO:
         self.tag = tag
         self.keep = keep
         self.old_path: Optional[str] = None
+        self.old_model_path: Optional[str] = None
         self.swa_start = swa_start
 
         self._epochs_string = "_epoch-"
@@ -188,6 +189,22 @@ class CheckpointIO:
             checkpoint_info.epochs,
         )
 
+    def save_model(
+        self, model, epochs: int, keep_last: bool = False
+    ) -> None:
+        if not self.keep and self.old_model_path and not keep_last:
+            logging.debug(f"Deleting old model file: {self.old_model_path}")
+            os.remove(self.old_model_path)
+
+        filename = self._get_checkpoint_filename(epochs, self.swa_start)
+        path_ = os.path.join(self.directory, filename)
+        model_path = path_.replace(".pt", ".model")
+
+        logging.debug(f"Saving model: {model_path}")
+        os.makedirs(self.directory, exist_ok=True)
+        torch.save(obj=model, f=model_path)
+        self.old_model_path = model_path
+
 
 class CheckpointHandler:
     def __init__(self, *args, **kwargs) -> None:
@@ -197,8 +214,9 @@ class CheckpointHandler:
     def save(
         self, state: CheckpointState, epochs: int, keep_last: bool = False
     ) -> None:
-        checkpoint = self.builder.create_checkpoint(state)
+        checkpoint, model = self.builder.create_checkpoint(state)
         self.io.save(checkpoint, epochs, keep_last)
+        self.io.save_model(model, epochs, keep_last)
 
     def load_latest(
         self,
