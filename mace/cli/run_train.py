@@ -553,11 +553,6 @@ def main() -> None:
             model = model.to("cpu")
         torch.save(model, model_path)
 
-        if swa_eval:
-            torch.save(model, Path(args.model_dir) / (args.name + "_swa.model"))
-        else:
-            torch.save(model, Path(args.model_dir) / (args.name + ".model"))
-
     logging.info("Done")
 
 
