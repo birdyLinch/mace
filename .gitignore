@@ -25,3 +25,4 @@ dist/
 # Mine
 checkpoints
 *.pt
+*.model
