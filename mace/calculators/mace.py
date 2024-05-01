@@ -18,6 +18,8 @@ from mace import data
 from mace.modules.utils import extract_invariant
 from mace.tools import torch_geometric, torch_tools, utils
 
+from mace.modules.models import rand_smooth_forward, ScaleShiftMACE, MACE
+
 
 def get_model_dtype(model: torch.nn.Module) -> torch.dtype:
     """Get the dtype of the model"""
@@ -112,6 +114,13 @@ class MACECalculator(Calculator):
         self.models = [
             torch.load(f=model_path, map_location=device) for model_path in model_paths
         ]
+
+        for model in self.models:
+            if isinstance(model, ScaleShiftMACE):
+                model.forward = rand_smooth_forward.__get__(model, ScaleShiftMACE)
+            else:
+                NotImplementedError("model must be scale shifted mace, or the randomized smoothing is not properly implemented")
+
         for model in self.models:
             model.to(device)  # shouldn't be necessary but seems to help with GPU
         r_maxs = [model.r_max.cpu() for model in self.models]

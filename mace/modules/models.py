@@ -13,6 +13,7 @@ from e3nn.util.jit import compile_mode
 
 from mace.data import AtomicData
 from mace.tools.scatter import scatter_sum
+from torch_geometric.data import Batch, Data
 
 from .blocks import (
     AtomicEnergiesBlock,
@@ -36,6 +37,103 @@ from .utils import (
 
 # pylint: disable=C0302
 
+class MappedData(Data):
+    key_mapping = {
+    'node_attrs': 'x',
+    'edge_index': 'edge_index',
+    'batch': 'batch',
+    'positions': 'pos',
+    'cell': 'cell',
+    'charges': 'charges',
+    'energy': 'energy',
+    'energy_weight': 'energy_weight',
+    'forces': 'forces',
+    'forces_weight': 'forces_weight',
+    'ptr': 'ptr',
+    'shifts': 'edge_attr',  # Assuming shifts is combined with unit_shifts for edge attributes
+    'unit_shifts': None,    # This will be merged with shifts, so it doesn't get its own attribute
+    'stress': 'stress',
+    'stress_weight': 'stress_weight',
+    'virials': 'virials',
+    'virials_weight': 'virials_weight',
+    'weight': 'weight'
+    }
+    def __init__(self, *args, **kwargs):
+        super(MappedData, self).__init__(*args, **kwargs)
+
+    def __getitem__(self, key):
+        # Redirect access using the mapping
+        mapped_key = self.key_mapping.get(key, key)  # Fallback to original key if not mapped
+        return getattr(self, mapped_key)
+
+    def __setitem__(self, key, value):
+        # Redirect setting using the mapping
+        mapped_key = self.key_mapping.get(key, key)
+        setattr(self, mapped_key, value)
+
+class MappedBatch(Batch):
+    key_mapping = {
+    'node_attrs': 'x',
+    'edge_index': 'edge_index',
+    'batch': 'batch',
+    'positions': 'pos',
+    'cell': 'cell',
+    'charges': 'charges',
+    'energy': 'energy',
+    'energy_weight': 'energy_weight',
+    'forces': 'forces',
+    'forces_weight': 'forces_weight',
+    'ptr': 'ptr',
+    'shifts': 'edge_attr',  # Assuming shifts is combined with unit_shifts for edge attributes
+    'unit_shifts': 'edge_attr',    # This will be merged with shifts, so it doesn't get its own attribute
+    'stress': 'stress',
+    'stress_weight': 'stress_weight',
+    'virials': 'virials',
+    'virials_weight': 'virials_weight',
+    'weight': 'weight'
+    }
+    def __init__(self, *args, **kwargs):
+        super(MappedBatch, self).__init__(*args, **kwargs)
+
+    def __getitem__(self, key):
+        # Redirect access using the mapping
+        mapped_key = self.key_mapping.get(key, key)  # Fallback to original key if not mapped
+        if key == "shifts":
+            return super().__getitem__(mapped_key)[:, 0:3]
+        elif key == "unit_shifts":
+            return super().__getitem__(mapped_key)[:, 3:]
+        return super().__getitem__(mapped_key)
+
+def dict2pygdata(data):
+    shifts_tensor = torch.tensor(data['shifts'], dtype=torch.float)
+    unit_shifts_tensor = torch.tensor(data['unit_shifts'], dtype=torch.float)
+
+    # Concatenate along the feature dimension if they have the same number of rows (edges)
+    if shifts_tensor.size(0) == unit_shifts_tensor.size(0):
+        edge_attr = torch.cat([shifts_tensor, unit_shifts_tensor], dim=1)
+    else:
+        raise ValueError("Mismatch in number of edges for shifts and unit_shifts")
+    
+    graph_data = Data(
+        x=torch.tensor(data['node_attrs'], dtype=torch.float),  # Node features
+        edge_index=torch.tensor(data['edge_index'], dtype=torch.long),  # Edge connectivity
+        edge_attr=edge_attr,  # Combined edge attributes
+        batch=torch.tensor(data['batch'], dtype=torch.long),  # Batch vector
+        pos=torch.tensor(data['positions'], dtype=torch.float),  # Positions, often used as features
+        cell=torch.tensor(data['cell'], dtype=torch.float),  # Additional property, not standard
+        charges=torch.tensor(data['charges'], dtype=torch.float),  # Additional property, not standard
+        energy=torch.tensor(data['energy'], dtype=torch.float),  # Scalar graph property
+        energy_weight=torch.tensor(data['energy_weight'], dtype=torch.float),  # Weight for the energy
+        forces=torch.tensor(data['forces'], dtype=torch.float),  # Forces, another graph property
+        forces_weight=torch.tensor(data['forces_weight'], dtype=torch.float),  # Weight for the forces
+        ptr=torch.tensor(data['ptr'], dtype=torch.long),  # Cumulative sum of nodes per graph (used in batch-wise operations)
+        stress=torch.tensor(data['stress'], dtype=torch.float),  # Stress tensor
+        stress_weight=torch.tensor(data['stress_weight'], dtype=torch.float),  # Weight for the stress
+        virials=torch.tensor(data['virials'], dtype=torch.float),  # Virials tensor
+        virials_weight=torch.tensor(data['virials_weight'], dtype=torch.float),  # Weight for the virials
+        weight=torch.tensor(data['weight'], dtype=torch.float)  # Overall weight for the batch
+    )
+    return graph_data
 
 @compile_mode("script")
 class MACE(torch.nn.Module):
@@ -265,7 +363,166 @@ class MACE(torch.nn.Module):
             "displacement": displacement,
             "node_feats": node_feats_out,
         }
+    
+def random_smooth_in(data, std=0.01, replica=10):
+    if not isinstance(data, Batch):
+        if data['ptr'].shape[-1] == 2:
+            data = dict2pygdata(data)
+    repeated_data_list = [data.clone() for _ in range(replica)]  # Replicate the data
+    repeated_batch = MappedBatch.from_data_list(repeated_data_list)
+    
+    # Adding Gaussian noise to each position
+    noise = torch.randn(repeated_batch['positions'].size(), device=repeated_batch['positions'].device) * std  # Generate noise
+    repeated_batch['positions'] += noise  # Add noise to the positions
 
+    repeated_batch['n_replicas'] = replica
+    
+    return repeated_batch
+
+
+def random_smooth_out(out_dict, data):
+    avg_out_dict = {}
+    
+    n_replicas = data.n_replicas
+    # Check if data.num_nodes is divisible by n_replicas
+    if data.num_nodes % n_replicas != 0:
+        raise ValueError("Number of nodes is not evenly divisible by the number of replicas. Adjust n_replicas.")
+
+    n_nodes = data.num_nodes // n_replicas
+
+    for key, value in out_dict.items():
+        if key == "node_energy":
+            # import ipdb; ipdb.set_trace()
+            pass
+        if value.size(0) == n_replicas * n_nodes:
+            value = value.view(n_replicas, n_nodes, *value.shape[1:])
+            avg_out_dict[key] = torch.mean(value, dim=0, keepdim=False)
+        elif value.size(0) == n_replicas:
+            avg_out_dict[key] = torch.mean(value, dim=0, keepdim=False)
+        elif value.size(0) == 1:
+            avg_out_dict[key] = value
+        else:
+            import ipdb; ipdb.set_trace()
+            raise NotImplementedError(f"out_dict[\'{key}\'] has shape {value.shape} which is not expected as n_replicas x num_nodes")
+        
+    return avg_out_dict
+
+
+def rand_smooth_forward( 
+        self,
+        data: Dict[str, torch.Tensor],
+        training: bool = False,
+        compute_force: bool = True,
+        compute_virials: bool = False,
+        compute_stress: bool = False,
+        compute_displacement: bool = False,
+    ) -> Dict[str, Optional[torch.Tensor]]: 
+    
+    origin_data = data
+    data = random_smooth_in(origin_data, 0.001, 10)
+    
+    # Setup
+    data["positions"].requires_grad_(True)
+    data["node_attrs"].requires_grad_(True)
+    num_graphs = data["ptr"].numel() - 1
+    # print(num_graphs)
+    displacement = torch.zeros(
+        (num_graphs, 3, 3),
+        dtype=data["positions"].dtype,
+        device=data["positions"].device,
+    )
+    if compute_virials or compute_stress or compute_displacement:
+        (
+            data["positions"],
+            data["shifts"],
+            displacement,
+        ) = get_symmetric_displacement(
+            positions=data["positions"],
+            unit_shifts=data["unit_shifts"],
+            cell=data["cell"],
+            edge_index=data["edge_index"],
+            num_graphs=num_graphs,
+            batch=data["batch"],
+        )
+
+    # Atomic energies does not change with inputs; use origin_data
+    node_e0 = self.atomic_energies_fn(data["node_attrs"])
+    e0 = scatter_sum(
+        src=node_e0, index=data["batch"], dim=-1, dim_size=num_graphs
+    )  # [n_graphs,]
+
+    # Embeddings
+    node_feats = self.node_embedding(data["node_attrs"])
+    vectors, lengths = get_edge_vectors_and_lengths(
+        positions=data["positions"],
+        edge_index=data["edge_index"],
+        shifts=data["shifts"],
+    )
+    edge_attrs = self.spherical_harmonics(vectors)
+    edge_feats = self.radial_embedding(lengths)
+
+    # Interactions
+    node_es_list = []
+    node_feats_list = []
+    for interaction, product, readout in zip(
+        self.interactions, self.products, self.readouts
+    ):
+        node_feats, sc = interaction(
+            node_attrs=data["node_attrs"],
+            node_feats=node_feats,
+            edge_attrs=edge_attrs,
+            edge_feats=edge_feats,
+            edge_index=data["edge_index"],
+        )
+        node_feats = product(
+            node_feats=node_feats, sc=sc, node_attrs=data["node_attrs"]
+        )
+        node_feats_list.append(node_feats)
+        node_es_list.append(readout(node_feats).squeeze(-1))  # {[n_nodes, ], }
+
+    # Concatenate node features
+    node_feats_out = torch.cat(node_feats_list, dim=-1)
+
+    # Sum over interactions
+    node_inter_es = torch.sum(
+        torch.stack(node_es_list, dim=0), dim=0
+    )  # [n_nodes, ]
+    node_inter_es = self.scale_shift(node_inter_es)
+
+    # Sum over nodes in graph
+    inter_e = scatter_sum(
+        src=node_inter_es, index=data["batch"], dim=-1, dim_size=num_graphs
+    )  # [n_graphs,]
+
+    # Add E_0 and (scaled) interaction energy
+    total_energy = e0 + inter_e
+    node_energy = node_e0 + node_inter_es
+
+    forces, virials, stress = get_outputs(
+        energy=inter_e,
+        positions=data["positions"],
+        displacement=displacement,
+        cell=data["cell"],
+        training=training,
+        compute_force=compute_force,
+        compute_virials=compute_virials,
+        compute_stress=compute_stress,
+    )
+
+    output = {
+        "energy": total_energy,
+        "node_energy": node_energy,
+        "interaction_energy": inter_e,
+        "forces": forces,
+        "virials": virials,
+        "stress": stress,
+        "displacement": displacement,
+        "node_feats": node_feats_out,
+    }
+
+    output = random_smooth_out(output, data)
+    
+    return output
 
 @compile_mode("script")
 class ScaleShiftMACE(MACE):

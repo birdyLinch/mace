@@ -47,6 +47,7 @@ def compute_forces_virials(
     compute_stress: bool = False,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
     grad_outputs: List[Optional[torch.Tensor]] = [torch.ones_like(energy)]
+
     forces, virials = torch.autograd.grad(
         outputs=[energy],  # [n_graphs, ]
         inputs=[positions, displacement],  # [n_nodes, 3]
@@ -67,7 +68,7 @@ def compute_forces_virials(
     if forces is None:
         forces = torch.zeros_like(positions)
     if virials is None:
-        virials = torch.zeros((1, 3, 3))
+        virials = torch.zeros((1, 3, 3)) # why (1, 3, 3)?
 
     return -1 * forces, -1 * virials, stress
 

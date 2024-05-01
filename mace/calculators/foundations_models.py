@@ -102,6 +102,7 @@ def mace_mp(
         print(
             "Using float32 for MACECalculator, which is faster but less accurate. Recommended for MD. Use float64 for geometry optimization."
         )
+
     mace_calc = MACECalculator(
         model_paths=model, device=device, default_dtype=default_dtype, **kwargs
     )
